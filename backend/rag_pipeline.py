@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import List, Optional, Dict, Any
 
 from .openrouter_client import OpenRouterClient
-from .models import ChatRequest, ChatResponse, IntentResult, PrattProfile
+from .models import ChatRequest, ChatResponse, IntentResult, PrattProfile, SourceChunk
 from .rag.retriever import Retriever
 
 
@@ -49,8 +49,8 @@ async def retrieve_context(
     pratt_profile: Optional[PrattProfile],
     intent: str,
     k: int = 5,
-) -> List[str]:
-    """Retrieve RAG context for a question using the real vector store."""
+):
+    """Retrieve RAG context documents for a question using the real vector store."""
 
     docs = await retriever.retrieve(
         question=question,
@@ -59,15 +59,15 @@ async def retrieve_context(
         k=k,
     )
 
-    return [d.text for d in docs]
+    return docs
 
 
 async def retrieve_fewshot_examples(
     retriever: Retriever,
     question: str,
     pratt_profile: Optional[PrattProfile],
-    k: int = 3,
-) -> List[str]:
+    k: int = 2,
+):
     """Retrieve few-shot example chunks to guide answer style/structure.
 
     These come from documents tagged with type="fewshot_example" and are not
@@ -82,7 +82,7 @@ async def retrieve_fewshot_examples(
         type_filter="fewshot_example",
     )
 
-    return [d.text for d in docs]
+    return docs
 
 
 async def generate_answer(

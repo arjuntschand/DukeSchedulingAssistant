@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 
 from .config import get_settings
-from .models import ChatRequest, ChatResponse
+from .models import ChatRequest, ChatResponse, SourceChunk
 from .openrouter_client import OpenRouterClient
 from .rag_pipeline import (
     classify_intent,
@@ -27,6 +28,15 @@ _vector_store = VectorStore(
     persist_dir=Path(__file__).resolve().parent / ".chroma",
 )
 _retriever = Retriever(store=_vector_store, embedding_backend=_embedding_backend)
+
+# Serve raw context documents (CSVs, PDFs) so the frontend can
+# open a "View source" link for retrieved chunks.
+CONTEXT_DOCS_DIR = Path(__file__).resolve().parent.parent / "ContextDocuments"
+app.mount(
+    "/context-docs",
+    StaticFiles(directory=CONTEXT_DOCS_DIR),
+    name="context-docs",
+)
 
 # CORS so the Vite dev server (and later production frontend) can call this API.
 app.add_middleware(
@@ -72,13 +82,26 @@ async def chat_endpoint(request: ChatRequest) -> ChatResponse:
     # flow without any external dependencies.
     current_settings = get_settings()
     if not current_settings.openrouter_api_key:
-        retrieved_chunks = await retrieve_context(
+        docs = await retrieve_context(
             retriever=_retriever,
             question=request.message,
             pratt_profile=request.prattProfile,
             intent="other",
             k=3,
         )
+        retrieved_chunks = [d.text for d in docs]
+        sources: list[SourceChunk] = []
+        for d in docs:
+            meta = d.metadata or {}
+            sources.append(
+                SourceChunk(
+                    text=d.text,
+                    source_file=meta.get("source_file"),
+                    page=meta.get("page"),
+                    chunk_index=meta.get("chunk_index"),
+                    type=meta.get("type"),
+                )
+            )
         return ChatResponse(
             reply=(
                 "This is a placeholder backend response. No OpenRouter API key is "
@@ -87,6 +110,7 @@ async def chat_endpoint(request: ChatRequest) -> ChatResponse:
                 "context and a GPT-style model to answer more precisely."
             ),
             retrieved_chunks=retrieved_chunks,
+            sources=sources,
             metadata={"intent": "other", "intent_confidence": 0.0, "using_model": False},
         )
 
@@ -94,19 +118,36 @@ async def chat_endpoint(request: ChatRequest) -> ChatResponse:
 
     try:
         intent_result = await classify_intent(llm, request.message)
-        retrieved_chunks = await retrieve_context(
+        docs = await retrieve_context(
             retriever=_retriever,
             question=request.message,
             pratt_profile=request.prattProfile,
             intent=intent_result.intent,
             k=5,
         )
-        fewshot_chunks = await retrieve_fewshot_examples(
+        retrieved_chunks = [d.text for d in docs]
+        sources: list[SourceChunk] = []
+        for d in docs:
+            meta = d.metadata or {}
+            sources.append(
+                SourceChunk(
+                    text=d.text,
+                    source_file=meta.get("source_file"),
+                    page=meta.get("page"),
+                    chunk_index=meta.get("chunk_index"),
+                    type=meta.get("type"),
+                )
+            )
+
+        fewshot_docs = await retrieve_fewshot_examples(
             retriever=_retriever,
             question=request.message,
             pratt_profile=request.prattProfile,
-            k=3,
+            k=2,
         )
+        # Expose few-shot example texts alongside main context so the
+        # frontend can optionally display them for debugging/demo.
+        fewshot_chunks = [d.text for d in fewshot_docs]
         response = await generate_answer(
             llm,
             request,
@@ -114,6 +155,11 @@ async def chat_endpoint(request: ChatRequest) -> ChatResponse:
             intent=intent_result.intent,
             fewshot_chunks=fewshot_chunks,
         )
+        response.sources = sources
+        if fewshot_chunks:
+            # Hard-cap what we expose so the frontend dropdown only
+            # shows the top 2 few-shot examples actually used.
+            response.metadata.setdefault("fewshot_chunks", fewshot_chunks[:2])
         # Attach more metadata if needed
         response.metadata.setdefault("intent_confidence", intent_result.confidence)
         response.metadata.setdefault("using_model", True)

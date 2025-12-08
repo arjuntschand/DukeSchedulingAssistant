@@ -91,6 +91,17 @@ const App: React.FC = () => {
         const data = (await response.json()) as {
           reply?: string;
           retrieved_chunks?: string[];
+          sources?: {
+            text: string;
+            source_file?: string;
+            page?: number;
+            chunk_index?: number;
+            type?: string;
+          }[];
+          metadata?: {
+            fewshot_chunks?: string[];
+            [key: string]: unknown;
+          };
         };
 
         const assistantContent =
@@ -98,21 +109,11 @@ const App: React.FC = () => {
           'This is where the Duke degree planning model will respond once the backend is connected.';
 
         const assistantMessage = createMessage('assistant', assistantContent);
+        assistantMessage.retrievedChunks = data.retrieved_chunks ?? [];
+        assistantMessage.sources = data.sources ?? [];
+        assistantMessage.fewshotChunks = data.metadata?.fewshot_chunks ?? [];
         updateConversationMessages(activeConversation.id, (prev) => {
-          const next = [...prev, assistantMessage];
-
-          if (data.retrieved_chunks && data.retrieved_chunks.length > 0) {
-            const debugContent =
-              'Sources used (retrieved context):\n\n' +
-              data.retrieved_chunks
-                .map((chunk, index) => `[${index + 1}] ${chunk}`)
-                .join('\n\n---\n\n');
-
-            const debugMessage = createMessage('assistant', debugContent);
-            next.push(debugMessage);
-          }
-
-          return next;
+          return [...prev, assistantMessage];
         });
       } catch (error) {
         // Frontend-only mock behavior for now

@@ -96,6 +96,14 @@ def _chunk_text(text: str, max_words: int = 400) -> List[str]:
 
 
 def _pdf_to_documents(pdf_path: Path) -> List[Document]:
+    """Convert a PDF into Documents.
+
+    - Normal handbooks are split into ~400-word chunks.
+    - Few-shot PDFs (filename contains "fewshot" or "few_shot") are split
+      into whole example paths instead of arbitrary chunks. Each example
+      becomes a single Document so we can retrieve the top-k examples.
+    """
+
     reader = PdfReader(str(pdf_path))
     full_text_parts: List[str] = []
     for page in reader.pages:
@@ -111,15 +119,55 @@ def _pdf_to_documents(pdf_path: Path) -> List[Document]:
         return []
 
     filename = pdf_path.name
+    lower_name = filename.lower()
 
     # Few-shot examples PDF is not tied to a single major; mark as ALL and
     # give it a special type so we can retrieve it separately.
-    if "fewshot" in filename.lower() or "few_shot" in filename.lower():
+    if "fewshot" in lower_name or "few_shot" in lower_name:
         major_code = "ALL"
         doc_type = "fewshot_example"
-    else:
-        major_code = _guess_major_from_pdf_name(filename)
-        doc_type = "handbook_requirement"
+
+        # Heuristic: split into whole example paths. In the provided
+        # FewShotLearningExamples.pdf each example starts with a
+        # "Base Information" section, so we use that as the
+        # boundary marker rather than generic "Example N" markers.
+        import re
+
+        # Insert explicit newlines around "Base Information" so splitting is easier.
+        normalized = re.sub(r"(Base Information)", r"\n\1", full_text)
+        # Split on lines that start with "Base Information".
+        parts = re.split(r"(?=^Base Information)", normalized, flags=re.MULTILINE)
+        examples: List[str] = []
+        for part in parts:
+            cleaned = part.strip()
+            if cleaned:
+                examples.append(cleaned)
+
+        docs: List[Document] = []
+        for idx, example_text in enumerate(examples):
+            doc_id = f"{filename}:example-{idx}"
+            title = f"{filename} example {idx + 1}"
+            metadata = {
+                "source_file": filename,
+                "example_index": idx,
+            }
+            docs.append(
+                Document(
+                    id=doc_id,
+                    major=major_code,
+                    type=doc_type,
+                    code=None,
+                    title=title,
+                    text=example_text,
+                    metadata=metadata,
+                )
+            )
+
+        return docs
+
+    # Default handbook behavior: chunk into ~400-word pieces.
+    major_code = _guess_major_from_pdf_name(filename)
+    doc_type = "handbook_requirement"
 
     chunks = _chunk_text(full_text, max_words=400)
     docs: List[Document] = []

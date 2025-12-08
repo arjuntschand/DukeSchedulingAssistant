@@ -15,6 +15,14 @@ class ChatMessage(BaseModel):
     timestamp: str
 
 
+class SourceChunk(BaseModel):
+    text: str
+    source_file: Optional[str] = None
+    page: Optional[int] = None
+    chunk_index: Optional[int] = None
+    type: Optional[str] = None
+
+
 class PrattProfile(BaseModel):
     major: Optional[str] = None
     classYear: Optional[str] = None
@@ -32,6 +40,7 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     reply: str
     retrieved_chunks: List[str] = Field(default_factory=list)
+    sources: List[SourceChunk] = Field(default_factory=list)
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
