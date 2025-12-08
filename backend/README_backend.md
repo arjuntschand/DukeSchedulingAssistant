@@ -1,8 +1,9 @@
 # Duke Pratt Degree & Course Planning Chatbot Backend
 
 FastAPI-based backend for the Duke Pratt advising chatbot. This service exposes
-`POST /api/chat`, performs a simple RAG-like pipeline over a toy corpus, and
-uses an OpenAI-compatible GPT model to generate answers.
+`POST /api/chat`, runs a real RAG pipeline over the handbook / course CSV /
+few-shot example corpus, and calls an OpenRouter-hosted GPT model to generate
+answers.
 
 The frontend (React + Vite) sends requests shaped like:
 
@@ -27,10 +28,21 @@ The backend responds with:
 ```json
 {
   "reply": "GPT-generated answer text",
-  "retrieved_chunks": ["handbook-like snippet 1", "snippet 2", "snippet 3"],
+  "retrieved_chunks": ["handbook-like snippet 1", "snippet 2"],
+  "sources": [
+    {
+      "text": "same text as in retrieved_chunks[0]",
+      "source_file": "BMEHandbook2024-2025.pdf",
+      "page": 17,
+      "chunk_index": 3,
+      "type": "handbook_requirement"
+    }
+  ],
   "metadata": {
     "intent": "major_requirements",
-    "intent_confidence": 0.7
+    "intent_confidence": 0.7,
+    "fewshot_chunks": ["few-shot example text 1", "few-shot example text 2"],
+    "using_model": true
   }
 }
 ```
@@ -52,12 +64,11 @@ Create a `.env` file based on `.env.example`:
 cp .env.example .env
 ```
 
-Edit `.env` and set your OpenAI (or compatible) API key and model names:
+Edit `.env` and set your OpenRouter key and model name:
 
 ```env
-OPENAI_API_KEY=your_api_key_here
-OPENAI_CHAT_MODEL=gpt-4.1-mini
-OPENAI_EMBEDDING_MODEL=text-embedding-3-small
+OPENROUTER_API_KEY=your_api_key_here
+OPENROUTER_MODEL=deepseek/deepseek-r1-distill-qwen-32b
 ```
 
 ## 2. Run the server
@@ -65,7 +76,7 @@ OPENAI_EMBEDDING_MODEL=text-embedding-3-small
 From inside `backend/` (with the virtualenv activated):
 
 ```bash
-uvicorn main:app --reload --port 8000
+uvicorn backend.main:app --reload --port 8000
 ```
 
 The API will be available at:
@@ -75,19 +86,10 @@ The API will be available at:
 
 ## 3. Frontend integration
 
-The existing frontend currently calls `fetch('/api/chat', ...)` from the Vite
-origin (usually `http://localhost:5173`). There are two options to connect it
-with this backend:
-
-1. **Change the frontend fetch URL** to the full backend URL, e.g.:
-   `fetch('http://localhost:8000/api/chat', ...)`.
-
-2. **Or configure a Vite dev proxy** so that `/api/chat` is forwarded to the
-   backend while in development.
-
-Given your current setup, the minimal change is to update the frontend fetch
-URL to `http://localhost:8000/api/chat`. No backend changes are required for
-this; CORS is already configured to allow `http://localhost:5173`.
+The existing frontend calls `fetch('/api/chat', ...)` from the Vite origin
+(`http://localhost:5173`). In development, Vite is configured to proxy `/api`
+to `http://localhost:8000`, so you do not need to hard-code the full backend
+URL. CORS is configured to allow the dev origin.
 
 ## 4. Request → Response pipeline
 
@@ -105,39 +107,34 @@ this; CORS is already configured to allow `http://localhost:5173`.
      - `other`
 
 3. **Context retrieval** (`rag_pipeline.retrieve_context`):
-   - Delegates to `retrieval.simple_retriever.retrieve`.
-   - Uses a tiny in-memory corpus of handbook-like strings about Pratt majors,
-     overload rules, and study abroad.
-   - Uses a naive keyword overlap score to pick the top `k` chunks.
+   - Delegates to the real `Retriever` (`backend/rag/retriever.py`).
+   - Queries a Chroma vector index built from:
+     - Course CSVs (e.g. `BME_classes.csv`, `CEE_classes.csv`).
+     - Handbook PDFs (e.g. `BMEHandbook2024-2025.pdf`).
+   - Applies metadata filters based on the student's major and intent and
+     returns the top `k` `Document`s.
 
-4. **Answer generation** (`rag_pipeline.generate_answer`):
+4. **Few-shot example retrieval** (`rag_pipeline.retrieve_fewshot_examples`):
+   - Retrieves whole worked examples from `FewShotLearningExamples.pdf`,
+     ingested as `type="fewshot_example"`.
+   - Returns only the top 2 examples (by similarity to the question).
+
+5. **Answer generation** (`rag_pipeline.generate_answer`):
    - Builds a RAG-style prompt including:
      - A system message describing the Duke Pratt advising assistant.
      - A system message summarizing the `PrattProfile` fields.
-     - An assistant message listing the retrieved handbook-like excerpts.
+     - A system message listing the retrieved handbook / course context.
+     - A system message listing the selected few-shot examples (top 2).
+     - The prior conversation history from the current chat.
      - A final user message with the intent label and the student's question.
-   - Calls `LLMClient.chat(...)` to get an answer from the GPT model.
+   - Calls the OpenRouter client to get an answer from the GPT model.
    - Returns `ChatResponse` with:
      - `reply`: model answer.
      - `retrieved_chunks`: the snippets sent as context.
      - `metadata`: at least `intent` and `intent_confidence`.
 
-## 5. RAG and Pratt handbooks (future work)
+## 5. RAG and Pratt handbooks
 
-Current retrieval is purely illustrative and uses a hardcoded list in
-`backend/retrieval/simple_retriever.py`. To move to a real RAG over the five
-Pratt degree handbooks, you would:
-
-1. Place the handbook source files (PDF or text) under `backend/data/`.
-2. Create an ingestion script (e.g. `ingest_handbooks.py`) that:
-   - Loads and chunks each handbook into passages.
-   - Calls `LLMClient.embed(...)` to create embeddings.
-   - Stores embeddings and metadata in a local index or vector DB.
-3. Replace `simple_retriever.retrieve` with a new retriever that:
-   - Loads the index.
-   - Computes an embedding for the incoming question.
-   - Performs nearest-neighbor search to return the most relevant chunks.
-
-All higher-level interfaces (`retrieve_context`, `generate_answer`, and the
-`POST /api/chat` contract) can remain the same while you upgrade the retrieval
-layer.
+The legacy toy retriever has been replaced by a real vector-based RAG stack.
+For details on ingestion, Chroma, and the metadata-aware retriever, see
+`backend/README_RAG.md`.
